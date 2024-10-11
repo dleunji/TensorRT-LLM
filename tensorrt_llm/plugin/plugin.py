@@ -155,6 +155,7 @@ class PluginConfig(metaclass=PluginConfigMeta):
     _gemm_swiglu_plugin: Optional[str] = field(default=None, init=False)
     _fp8_rowwise_gemm_plugin: Optional[str] = field(default=None, init=False)
     _smooth_quant_gemm_plugin: Optional[str] = field(default=None, init=False)
+    _qserve_quant_gemm_plugin: Optional[str] = field(default=None, init=False)
     _identity_plugin: Optional[str] = field(default=None, init=False)
     _layernorm_quantization_plugin: Optional[str] = field(default=None,
                                                           init=False)
@@ -264,6 +265,12 @@ class PluginConfig(metaclass=PluginConfigMeta):
         self.layernorm_quantization_plugin = dtype
         self.quantize_per_token_plugin = True
         self.quantize_tensor_plugin = True
+        return self
+
+    def set_qserve_quant_plugins(self, dtype: str = "auto"):
+        self.smooth_quant_gemm_plugin = dtype
+        self.rmsnorm_quantization_plugin = dtype
+        self.layernorm_quantization_plugin = dtype
         return self
 
     def set_fp8_rowwise_quant_plugins(self, dtype: str = "auto"):

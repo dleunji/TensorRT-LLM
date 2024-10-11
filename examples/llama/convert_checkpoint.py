@@ -16,10 +16,13 @@ from tensorrt_llm.models import LLaMAForCausalLM
 from tensorrt_llm.models.modeling_utils import QuantConfig
 from tensorrt_llm.quantization import QuantAlgo
 
-
 def parse_arguments():
     parser = argparse.ArgumentParser()
     parser.add_argument('--model_dir', type=str, default=None)
+    parser.add_argument('--quant_dir',
+                        type=str,
+                        default=None,
+                        help="[Qserve] The directory for fake quantizede model dumped by LMQuant, including model.pt and scale.pt")
     parser.add_argument('--meta_ckpt_dir', type=str, default=None)
 
     parser.add_argument('--tp_size',
@@ -100,6 +103,13 @@ def parse_arguments():
         " to Smoothquant the model, and output int8 weights."
         " A good first try is 0.5. Must be in [0, 1]")
     parser.add_argument(
+        "--qserve",
+        action="store_true",
+        default=None,
+        help="Flag for Qserve quantization (see https://arxiv.org/pdf/2405.04532)"
+        "The fake quantized is provided with quant_dir."
+    )
+    parser.add_argument(
         '--per_channel',
         action="store_true",
         default=False,
@@ -162,7 +172,7 @@ def parse_arguments():
     parser.add_argument('--group_size',
                         type=int,
                         default=128,
-                        help='Group size used in GPTQ quantization.'
+                        help='Group size used in GPTQ quantization and Qserve. In case of Qserve, -1 means per-channel.'
                         )  # AWQ is only supported by quantize.py script
 
     parser.add_argument("--load_model_on_cpu", action="store_true")
@@ -264,6 +274,15 @@ def args_to_quant_config(args: argparse.Namespace) -> QuantConfig:
                 quant_config.quant_algo = QuantAlgo.W8A8_SQ_PER_TENSOR_PER_TOKEN_PLUGIN
             else:
                 quant_config.quant_algo = QuantAlgo.W8A8_SQ_PER_TENSOR_PLUGIN
+    elif args.qserve:
+        if args.per_channel:
+            quant_config.quant_algo = QuantAlgo.W4A8_QSERVE_PER_CHANNEL
+            quant_config.group_size = args.group_size
+        elif args.per_group:
+            quant_config.quant_algo = QuantAlgo.W4A8_QSERVE_PER_GROUP
+            quant_config.group_size = -1
+        else:
+            assert False, "You need to choose one of the methods between PER-GROUP or PER-CHANNEL for Qserve"
     elif args.use_fp8_rowwise:
         quant_config.quant_algo = QuantAlgo.FP8_PER_CHANNEL_PER_TOKEN
         # this will be overwritten if specified in the hf config.
@@ -409,6 +428,14 @@ def convert_and_save_hf(args):
             device='cpu' if args.load_model_on_cpu else 'cuda',
             calib_dataset=args.calib_dataset,
             **override_fields)
+    elif args.qserve is not None:
+        assert args.tp_size == 1 and args.pp_size == 1
+        # The kv cache and parallel is not implemented yet
+        LLaMAForCausalLM.load_qserve(args.model_dir)
+            # args.model_dir,
+            # args.quant_dir,
+            # args.group_size,
+            # device='cpu' if args.load_model_on_cpu else 'cuda',
     else:
         # When not loading by shard, preload one complete model and then slice per rank weights from this
         # this saves the disk reloading time

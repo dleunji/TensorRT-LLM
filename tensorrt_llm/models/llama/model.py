@@ -456,6 +456,9 @@ class LLaMAForCausalLM(DecoderModelForCausalLM):
             raise ValueError(
                 f"The quant_config ({quant_config}) does not require calibration, try {cls.__name__}.from_hugging_face instead."
             )
+    @classmethod
+    def load_qserve(cls, model_dir):
+        print("@eunji", "quantize PASS", model_dir)
 
     def use_lora(self, lora_config: LoraConfig):
         use_lora(self, lora_config)

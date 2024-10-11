@@ -37,7 +37,7 @@ from ..quantization.layers import (WeightOnlyGroupwiseQuantLinear,
                                    WeightOnlyQuantLinear,
                                    WeightOnlyQuantRowLinear)
 from ..quantization.mode import (KV_CACHE_QUANT_ALGO_LIST, QUANT_ALGO_LIST,
-                                 W8A8_SQ_PLUGIN_LIST, QuantAlgo)
+                                 W8A8_SQ_PLUGIN_LIST, W4A8_QSERVE_PLUGIN_LIST, QuantAlgo)
 from ..top_model_mixin import TopModelMixin
 from .convert_utils import weight_only_quantize_dict
 from .generation_mixin import GenerationMixin
@@ -105,6 +105,10 @@ class QuantConfig:
     @property
     def use_plugin_sq(self):
         return self.quant_algo in W8A8_SQ_PLUGIN_LIST
+
+    @property
+    def use_plugin_qserve(self):
+        return self.quant_algo in W4A8_QSERVE_PLUGIN_LIST
 
     @cached_property
     def quant_mode(self) -> QuantMode:

@@ -1095,6 +1095,8 @@ def build(model: PretrainedModel, build_config: BuildConfig) -> Engine:
             network.plugin_config.weight_only_quant_matmul_plugin = model.config.dtype
     if use_smooth_quant and model.config.quantization.use_plugin_sq:
         network.plugin_config.set_smooth_quant_plugins(model.config.dtype)
+    if use_qserve_quant and model.config.quantization.use_plugin_qserve:
+        network.plugin_config.set_qserve_quant_plugins(model.config.dtype)
     if use_fp8_rowwise:
         network.plugin_config.set_fp8_rowwise_quant_plugins(model.config.dtype)
     nccl_plugin = model.config.dtype if model.config.mapping.world_size > 1 else None

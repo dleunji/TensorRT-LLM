@@ -31,6 +31,8 @@ class QuantAlgo(StrEnum, metaclass=BaseEnumMeta):
     W8A8_SQ_PER_CHANNEL_PER_TOKEN_PLUGIN = auto()
     W8A8_SQ_PER_CHANNEL_PER_TENSOR_PLUGIN = auto()
     W8A8_SQ_PER_TENSOR_PER_TOKEN_PLUGIN = auto()
+    W4A8_QSERVE_PER_GROUP = auto()
+    W4A8_QSERVE_PER_CHANNEL = auto()
     FP8 = auto()
     FP8_PER_CHANNEL_PER_TOKEN = auto()
     INT8 = auto()
@@ -43,6 +45,9 @@ W8A8_SQ_PLUGIN_LIST = [
     QuantAlgo.W8A8_SQ_PER_CHANNEL_PER_TOKEN_PLUGIN,
     QuantAlgo.W8A8_SQ_PER_CHANNEL_PER_TENSOR_PLUGIN,
     QuantAlgo.W8A8_SQ_PER_TENSOR_PER_TOKEN_PLUGIN,
+]
+W4A8_QSERVE_PLUGIN_LIST = [
+    QuantAlgo.W4A8_QSERVE_PER_GROUP
 ]
 MODELOPT_FLOW_QUANTIZATIONS = {
     QuantAlgo.W4A16_AWQ, QuantAlgo.FP8, QuantAlgo.W8A8_SQ_PER_CHANNEL,
@@ -73,6 +78,9 @@ class QuantMode(IntFlag):
     FP8_QDQ = auto()
     # FP8 rowwise
     FP8_ROWWISE = auto()
+
+    SMOOTHQUANT = auto()
+    QSERVE = auto()
 
     # The smallest power-of-two that is not used by a flag. Do not call auto() after that line.
     COUNT = auto()
@@ -166,7 +174,9 @@ class QuantMode(IntFlag):
                          use_int8_kv_cache=False,
                          use_fp8_kv_cache=False,
                          use_fp8_qdq=False,
-                         use_fp8_rowwise=False):
+                         use_fp8_rowwise=False,
+                         use_smooth_quant=False,
+                         use_qserve_quant=False):
 
         def raise_error():
             raise ValueError(f"Unsupported combination of QuantMode args: "
@@ -179,7 +189,9 @@ class QuantMode(IntFlag):
                              f"{use_int8_kv_cache=}"
                              f"{use_fp8_kv_cache=}"
                              f"{use_fp8_qdq=}"
-                             f"{use_fp8_rowwise=}")
+                             f"{use_fp8_rowwise=}"
+                             f"{use_smooth_quant=}"
+                             f"{use_qserve_quant=}")
 
         # We must quantize weights when we quantize activations.
         if quantize_activations and not quantize_weights:
@@ -223,12 +235,22 @@ class QuantMode(IntFlag):
 
         if use_fp8_rowwise:
             mode = mode | QuantMode.FP8_ROWWISE | QuantMode.PER_TOKEN | QuantMode.PER_CHANNEL
+        
+        if use_smooth_quant:
+            mode = mode | QuantMode.SMOOTHQUANT
+        
+        if use_qserve_quant:
+            mode = model | QuantMode.QSERVE
 
         return mode
 
     @staticmethod
     def use_smooth_quant(per_token=False, per_channel=False):
-        return QuantMode.from_description(True, True, per_token, per_channel)
+        return QuantMode.from_description(True, True, per_token, per_channel, use_smooth_quant=True)
+    
+    @staticmethod
+    def use_qserve_quant(per_group=True):
+        return QuantMode.from_description(True, True, False, ~per_group, per_group, use_qserve_quant=True)
 
     @staticmethod
     def use_weight_only(use_int4_weights=False, per_group=False):
@@ -274,6 +296,8 @@ class QuantMode(IntFlag):
         elif quant_algo == QuantAlgo.W8A8_SQ_PER_TENSOR_PER_TOKEN_PLUGIN:
             quant_mode = QuantMode.use_smooth_quant(per_token=True,
                                                     per_channel=False)
+        elif quant_algo == QuantAlgo.W4A8_QSERVE_PER_GROUP:
+            quant_mode = QuantMode.use_qserve_quant(per_group=True)
         elif quant_algo == QuantAlgo.FP8:
             quant_mode = QuantMode.from_description(use_fp8_qdq=True)
         elif quant_algo == QuantAlgo.FP8_PER_CHANNEL_PER_TOKEN:
@@ -291,6 +315,8 @@ class QuantMode(IntFlag):
     def to_dict(self):
         return {
             'use_smooth_quant':
+            self.has_act_and_weight_quant(),
+            'use_qserve_quant':
             self.has_act_and_weight_quant(),
             'per_channel':
             self.has_per_channel_scaling(),
