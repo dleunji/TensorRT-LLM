@@ -431,11 +431,16 @@ def convert_and_save_hf(args):
     elif args.qserve is not None:
         assert args.tp_size == 1 and args.pp_size == 1
         # The kv cache and parallel is not implemented yet
-        LLaMAForCausalLM.load_qserve(args.model_dir)
-            # args.model_dir,
-            # args.quant_dir,
-            # args.group_size,
-            # device='cpu' if args.load_model_on_cpu else 'cuda',
+        print("Loading Fake Quantized Model from lmquant...")
+        LLaMAForCausalLM.load_qserve(
+            args.model_dir,
+            args.quant_dir,
+            args.output_dir,
+            group_size=args.group_size,
+            quant_config=quant_config,
+            device='cpu' if args.load_model_on_cpu else 'cuda',
+            **override_fields
+        )
     else:
         # When not loading by shard, preload one complete model and then slice per rank weights from this
         # this saves the disk reloading time
