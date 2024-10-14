@@ -42,6 +42,42 @@ from ..convert_utils import (dup_kv_weight, generate_int8,
 from ..modeling_utils import PretrainedConfig
 from .config import LLaMAConfig
 
+def get_blocks(model):
+    if model.__class__.__name__ == "LlamaForCausalLM":
+        layers = model.model.layers
+    elif model.__class__.__name__ == "LlavaLlamaForCausalLM":
+        # layers = [model.model.layers, model.model.vision_tower.vision_tower.vision_model.encoder.layers]
+        layers = model.model.layers
+    elif "mpt" in str(model.__class__).lower():
+        layers = model.transformer.blocks
+    elif "falcon" in str(model.__class__).lower():
+        layers = model.transformer.h
+    elif "bigcode" in str(model.__class__).lower():
+        layers = model.transformer.h
+    elif "neox" in str(model.__class__).lower():
+        layers = model.gpt_neox.layers
+    elif "mistral" in str(model.__class__).lower():
+        layers = model.model.layers
+    else:
+        raise NotImplementedError(type(model))
+    return layers
+
+def get_named_linears(module):
+    return {name: m for name, m in module.named_modules() if isinstance(m, nn.Linear)}
+
+def set_op_by_name(layer, name, new_module):
+    levels = name.split(".")
+    if len(levels) > 1:
+        mod_ = layer
+        for l_idx in range(len(levels) - 1):
+            if levels[l_idx].isdigit():
+                mod_ = mod_[int(levels[l_idx])]
+            else:
+                mod_ = getattr(mod_, levels[l_idx])
+        setattr(mod_, levels[-1], new_module)
+    else:
+        setattr(layer, name, new_module)
+
 
 @torch.no_grad()
 def smooth_llama_model(model, scales, alpha, llama_qkv_para, llama_smoother):
@@ -2144,3 +2180,176 @@ def load_weights_from_meta_ckpt(meta_ckpt_dir: str, config: LLaMAConfig):
     t = time.strftime('%H:%M:%S', time.gmtime(tok - tik))
     logger.info(f'Weights loaded. Total time: {t}')
     return weights
+
+def get_tllm_linear_qserve_weight(
+    model_layer_weight_name,
+    group_size,
+    qweight,
+    s1_scale,
+    s2_scale,
+    zeros,
+):
+    results = {}
+    results[f"{model_layer_weight_name}.qweight"] = qweight
+    results[f"{model_layer_weight_name}.s1_scale"] = s1_scale
+    if s2_scale:
+        assert gropu_size != -1 
+        results[f"{model_layer_weight_name}.s2_scale"] = s2_scale
+    if group_size != -1:
+        results[f"{model_layer_weight_name}.s2_zeros"] = zeros
+    else:
+        assert False, "Per-channel is not implemented yet."
+
+    return results
+
+
+def apply_qserve(
+    group_size: int,
+    linear: nn.Module,
+    s1_scale: torch.Tensor,
+    s2_scale: torch.Tensor,
+    zeros: torch.Tensor
+):
+    if group_size != -1:
+        # per-group
+
+        # Step 1: Quantize the weights to int8
+        linear_weight = linear.weight.data  # OC, IC
+        linear_weight = linear_weight.div_(s1_scale.reshape(linear.out_features, 1).to(linear_weight.device))
+
+        linear_weight = linear_weight.round_()
+        assert (
+            linear_weight.min() >= -128 and linear_weight.max() <= 127
+        ), "Stage 1: Quantized weight out of range"
+
+        # Step 2: Quantize the weights to int4
+        linear_weight = linear_weight.reshape(
+            linear.out_features, linear.in_features // group_size, group_size
+        )
+        s2_zero = zeros.reshape(
+            linear.out_features, linear.in_features // group_size, 1
+        )
+        s2_scale = s2_scale.reshape(
+            linear.out_features, linear.in_features // group_size, 1
+        )
+
+        # weight = [1024, 32, 128]
+        # s2_scale, s2_zero = [1024, 32, 1] 
+        linear_weight = linear_weight.div_(s2_scale.to(torch.float16).to(linear_weight.device)).add_(
+            s2_zero.to(torch.float16).to(linear_weight.device)
+        )
+
+        linear_weight = linear_weight.reshape(
+            linear.out_features, linear.in_features
+        ).to(torch.int8)
+
+        assert (
+            linear_weight.min() >= 0 and linear_weight.max() <= 15
+        ), "Stage 2: Quantized weight out of range"
+
+
+        # Reshape the scales and zeros
+        s1_scale = s1_scale.reshape(linear.out_features)
+        s2_scale = s2_scale.reshape(linear.out_features, linear.in_features // group_size)
+        s2_zero = -s2_zero
+        s2_zero = s2_zero.int()  # convert to 2-complement
+
+        s2_zero = s2_zero.reshape(linear.out_features, linear.in_features // group_size)
+
+        return linear_weight, s1_scale, s2_scale, s2_zero
+    else:
+        assert False, "Per-channel is not implemented yet."
+        return None, None, None, None
+    
+
+
+def load_from_lmquant(
+    model_dir: str,
+    quant_dir: str,
+    output_dir: str,
+    group_size: str,
+    config: LLaMAConfig,
+    device: str = "cuda"
+):
+
+    os.makedirs(output_dir, exist_ok=True)
+    config.to_json_file(os.path.join(output_dir, 'config.json'))
+
+    mapping = config.mapping
+    assert mapping.rank == 0, "quantize should be called at rank 0 only"
+
+
+    from collections import OrderedDict
+    hf_model = AutoModelForCausalLM.from_pretrained(model_dir)
+    fake_quant_ckpt = torch.load(os.path.join(quant_dir, "model.pt"), map_location=device)
+    quant_params = torch.load(os.path.join(quant_dir, "scale.pt"), map_location=device)
+
+    print("Finished Loading Models...")
+    layers = get_blocks(hf_model)
+
+    for i in tqdm(range(len(layers))):
+        layer = layers[i]
+        named_linears = get_named_linears(layer)
+
+        for name, module in named_linears.items():
+            layer_weight_name = f"model.layers.{i}.{name}"
+            s1_scale = quant_params[f"{layer_weight_name}.weight.scale.0"]
+            if group_size != -1:
+                # per-group
+                assert f"{layer_weight_name}.weight.scale.1" in quant_params
+                s2_scale = quant_params[f"{layer_weight_name}.weight.scale.1"]
+            else:
+                # per-channel
+                assert f"{layer_weigt_name}.weight.scale.1" not in quant_params
+                s2_scale = None
+            zeros = quant_params[f"{layer_weight_name}.weight.zero"].to(torch.int8)
+            if zeros.min() < 0:
+                zeros = zeros + 8
+            module.weight.data = fake_quant_ckpt[f"{layer_weight_name}.weight"]
+            module = module.cpu()
+            # print("@eunji", module, f"{layer_weight_name}.weight")
+
+            if group_size != -1:
+                qweight, s1_scale, s2_scale, s2_zero = apply_qserve(group_size, module, s1_scale, s2_scale, zeros)
+                print("################################################")
+                print("@eunji", "name: ", layer_weight_name)
+                print("@eunji", "qweight", qweight.dtype, qweight.shape)
+                print("@eunji", "s1_scale", s1_scale.dtype, s1_scale.shape)
+                print("@eunji", "s2_scale", s2_scale.dtype, s2_scale.shape)
+                print("@eunji", "zeros", s2_zero.dtype, s2_zero.shape)
+            else:
+                assert False, "Per-channel is not implemented yet."
+
+            # q_linear = convert.qserve_quant(module, group_size, s1_scale, s2_scale, zeros)
+
+            # from_linear(
+            #     module, group_size, init_only=False, s1_scale = s1_scale, s2_scale = s2_scale, zeros=zeros
+            # )
+            # set_op_by_name(layer, name, q_linear)
+    # for key, param in model.named_parameters():
+
+    #         # # update qkv
+    #         # q_proj_shard_size = 4096
+    #         # num_attention_heads = 4
+    #         # kv_proj_shard_size = q_proj_shard_size // num_attention_heads
+    #         # attention_weight_specs = [
+    #         #     ("q_proj", q_proj_shard_size, 0),
+    #         #     ("k_proj", kv_proj_shard_size, q_proj_shard_size),
+    #         #     ("v_proj", kv_proj_shard_size, q_proj_shard_size + kv_proj_shard_size)
+    #         # ]
+    #         # for weight_name, shart_size, offset in attention_weight_specs:
+    #         #     if weight_name not in layer_weight_name:
+    #         #         continue
+    #         # weights.update(get_tllm_linear_qserve_weight(layer_weight_name, qweight, s1_scale, s2_scale, zeros))
+            
+
+    #     print(key, param.shape)
+    #     if "_proj" in key:
+    #         pass
+    #     else:
+    #         assert key not in weights
+    #         weights[key] = fake_quant_ckpt[key].data
+    
+    # safetensors.torch.save_file(weights, os.path.join(output_dir, "rank0.safetensors"))
+    del model
+    del weights

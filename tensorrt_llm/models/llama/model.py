@@ -35,7 +35,48 @@ from .convert import (load_hf_llama, load_weights_from_gptq,
                       load_weights_from_hf_by_shard, load_weights_from_hf_model,
                       load_weights_from_hf_safetensors,
                       load_weights_from_meta_ckpt)
+import safetensors
+import torch
+from transformers import AutoConfig, AutoModelForCausalLM
+import torch.nn as nn
 
+from ..quantization.layers import QserveLinear
+
+def get_blocks(model):
+    if model.__class__.__name__ == "LlamaForCausalLM":
+        layers = model.model.layers
+    elif model.__class__.__name__ == "LlavaLlamaForCausalLM":
+        # layers = [model.model.layers, model.model.vision_tower.vision_tower.vision_model.encoder.layers]
+        layers = model.model.layers
+    elif "mpt" in str(model.__class__).lower():
+        layers = model.transformer.blocks
+    elif "falcon" in str(model.__class__).lower():
+        layers = model.transformer.h
+    elif "bigcode" in str(model.__class__).lower():
+        layers = model.transformer.h
+    elif "neox" in str(model.__class__).lower():
+        layers = model.gpt_neox.layers
+    elif "mistral" in str(model.__class__).lower():
+        layers = model.model.layers
+    else:
+        raise NotImplementedError(type(model))
+    return layers
+
+def get_named_linears(module):
+    return {name: m for name, m in module.named_modules() if isinstance(m, nn.Linear)}
+
+def set_op_by_name(layer, name, new_module):
+    levels = name.split(".")
+    if len(levels) > 1:
+        mod_ = layer
+        for l_idx in range(len(levels) - 1):
+            if levels[l_idx].isdigit():
+                mod_ = mod_[int(levels[l_idx])]
+            else:
+                mod_ = getattr(mod_, levels[l_idx])
+        setattr(mod_, levels[-1], new_module)
+    else:
+        setattr(layer, name, new_module)
 
 class LLaMADecoderLayer(Module):
 
@@ -456,9 +497,30 @@ class LLaMAForCausalLM(DecoderModelForCausalLM):
             raise ValueError(
                 f"The quant_config ({quant_config}) does not require calibration, try {cls.__name__}.from_hugging_face instead."
             )
+
+
     @classmethod
-    def load_qserve(cls, model_dir):
-        print("@eunji", "quantize PASS", model_dir)
+    def load_qserve(
+        cls,
+        model_dir,
+        quant_dir,
+        output_dir,
+        group_size,
+        quant_config,
+        device,
+        **kwargs):
+        from . import convert
+        config = LLaMAConfig.from_hugging_face(model_dir,
+                                                quant_config=quant_config,
+                                                **kwargs)
+
+        convert.load_from_lmquant(model_dir,
+                                    quant_dir,
+                                    output_dir,
+                                    group_size,
+                                    config,
+                                    device)
+
 
     def use_lora(self, lora_config: LoraConfig):
         use_lora(self, lora_config)
