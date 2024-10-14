@@ -2271,7 +2271,6 @@ def load_from_lmquant(
     config: LLaMAConfig,
     device: str = "cuda"
 ):
-
     os.makedirs(output_dir, exist_ok=True)
     config.to_json_file(os.path.join(output_dir, 'config.json'))
 
@@ -2279,20 +2278,21 @@ def load_from_lmquant(
     assert mapping.rank == 0, "quantize should be called at rank 0 only"
 
 
-    from collections import OrderedDict
+    # from collections import OrderedDict
     hf_model = AutoModelForCausalLM.from_pretrained(model_dir)
     fake_quant_ckpt = torch.load(os.path.join(quant_dir, "model.pt"), map_location=device)
     quant_params = torch.load(os.path.join(quant_dir, "scale.pt"), map_location=device)
 
     print("Finished Loading Models...")
     layers = get_blocks(hf_model)
+    weights = {}
 
     for i in tqdm(range(len(layers))):
         layer = layers[i]
         named_linears = get_named_linears(layer)
 
-        for name, module in named_linears.items():
-            layer_weight_name = f"model.layers.{i}.{name}"
+        for module_name, module in named_linears.items():
+            layer_weight_name = f"model.layers.{i}.{module_name}"
             s1_scale = quant_params[f"{layer_weight_name}.weight.scale.0"]
             if group_size != -1:
                 # per-group
@@ -2310,46 +2310,92 @@ def load_from_lmquant(
             # print("@eunji", module, f"{layer_weight_name}.weight")
 
             if group_size != -1:
-                qweight, s1_scale, s2_scale, s2_zero = apply_qserve(group_size, module, s1_scale, s2_scale, zeros)
-                print("################################################")
-                print("@eunji", "name: ", layer_weight_name)
-                print("@eunji", "qweight", qweight.dtype, qweight.shape)
-                print("@eunji", "s1_scale", s1_scale.dtype, s1_scale.shape)
-                print("@eunji", "s2_scale", s2_scale.dtype, s2_scale.shape)
-                print("@eunji", "zeros", s2_zero.dtype, s2_zero.shape)
+                tllm_prefix = f'transformer.layers.{i}.'
+                name = ""
+                if "self_attn" in layer_weight_name:
+                    module_name = module_name.replace("self_attn", "attention")
+                    if "o_proj" in layer_weight_name:
+                        module_name = module_name.replace("o_proj", "dense")
+                    name += f"{module_name}."
+                elif "mlp.up_proj" in layer_weight_name:
+                    name += "mlp.gate."
+                elif "mlp.down_proj" in layer_weight_name:
+                    name += "mlp.proj."
+                elif "mlp.gate_proj" in layer_weight_name:
+                    name += "mlp.fc."
+                tllm_name = tllm_prefix + name
+                qweight, s1_scales, s2_scales, s2_zeros = apply_qserve(group_size, module, s1_scale, s2_scale, zeros)
+                print(tllm_name + "weight")
+                weights[tllm_name + "weight"] = qweight
+                weights[tllm_name + "s1_scales"] = s1_scales
+                weights[tllm_name + "s2_scales"] = s2_scales
+                weights[tllm_name + "s2_zeros"] = s2_zeros
+                # print("################################################")
+                # print("@eunji", "name: ", layer_weight_name)
+                # print("@eunji", "qweight", qweight.dtype, qweight.shape)
+                # print("@eunji", "s1_scale", s1_scales.dtype, s1_scales.shape)
+                # print("@eunji", "s2_scale", s2_scales.dtype, s2_scales.shape)
+                # print("@eunji", "zeros", s2_zeros.dtype, s2_zeros.shape)
             else:
                 assert False, "Per-channel is not implemented yet."
+    # merge qkv
+    q_proj_shard_size = 4096
+    num_attention_heads = 4
+    kv_proj_shard_size = q_proj_shard_size // num_attention_heads
+    attention_weight_specs = [
+        ("q_proj", q_proj_shard_size, 0),
+        ("k_proj", kv_proj_shard_size, q_proj_shard_size),
+        ("v_proj", kv_proj_shard_size, q_proj_shard_size + kv_proj_shard_size)
+    ]
 
-            # q_linear = convert.qserve_quant(module, group_size, s1_scale, s2_scale, zeros)
+    def merge_qkv(weights, sub_param_name):
+        q_proj = weights[layer_weight_name + f"q_proj.{sub_param_name}"]
+        k_proj = weights[layer_weight_name + f"k_proj.{sub_param_name}"]
+        v_proj = weights[layer_weight_name + f"v_proj.{sub_param_name}"]
 
-            # from_linear(
-            #     module, group_size, init_only=False, s1_scale = s1_scale, s2_scale = s2_scale, zeros=zeros
-            # )
-            # set_op_by_name(layer, name, q_linear)
-    # for key, param in model.named_parameters():
+        qkv_list = [q_proj, k_proj, v_proj]
+        qkv_proj = torch.cat(qkv_list, 0)
+        weights[layer_weight_name + f"qkv.{sub_param_name}"] = qkv_proj
 
-    #         # # update qkv
-    #         # q_proj_shard_size = 4096
-    #         # num_attention_heads = 4
-    #         # kv_proj_shard_size = q_proj_shard_size // num_attention_heads
-    #         # attention_weight_specs = [
-    #         #     ("q_proj", q_proj_shard_size, 0),
-    #         #     ("k_proj", kv_proj_shard_size, q_proj_shard_size),
-    #         #     ("v_proj", kv_proj_shard_size, q_proj_shard_size + kv_proj_shard_size)
-    #         # ]
-    #         # for weight_name, shart_size, offset in attention_weight_specs:
-    #         #     if weight_name not in layer_weight_name:
-    #         #         continue
-    #         # weights.update(get_tllm_linear_qserve_weight(layer_weight_name, qweight, s1_scale, s2_scale, zeros))
-            
+        del q_proj, k_proj, v_proj
 
-    #     print(key, param.shape)
-    #     if "_proj" in key:
-    #         pass
-    #     else:
-    #         assert key not in weights
-    #         weights[key] = fake_quant_ckpt[key].data
+        weights.pop(layer_weight_name + f"q_proj.{sub_param_name}")
+        weights.pop(layer_weight_name + f"k_proj.{sub_param_name}")
+        weights.pop(layer_weight_name + f"v_proj.{sub_param_name}")
+
+
     
-    # safetensors.torch.save_file(weights, os.path.join(output_dir, "rank0.safetensors"))
-    del model
+    for i in tqdm(range(len(layers))):
+        # layer = layers[i]
+        layer_weight_name = f"transformer.layers.{i}.attention."
+
+        merge_qkv(weights, "weight")
+        merge_qkv(weights, "s1_scales")
+        if group_size != -1:
+            merge_qkv(weights, "s2_scales")
+            merge_qkv(weights, "s2_zeros")
+        else:
+            assert False
+
+
+    for key, param in hf_model.named_parameters():
+        if "_proj" in key:
+            pass
+        else:
+            if "model" in key:
+                key = key.replace("model", "transformers")
+            if "embed_tokens" in key:
+                key = "lm_head.weight"
+            elif "post_attention_layernorm" in key:
+                key = key.replace("post_attention_layernorm", "post_layernorm")
+            if "model.norm.weight" == key:
+                key = "transformer.ln_f.weight"
+            weights[key] = param
+    # weights = {key: value for key, value in sorted(weights.items())}
+    for key, weight in weights.items():
+        print(key, weight.shape)
+
+    safetensors.torch.save_file(
+        weights, os.path.join(output_dir, f'rank0.safetensors'))
+
     del weights
