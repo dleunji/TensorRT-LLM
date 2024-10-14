@@ -1969,3 +1969,117 @@ class SmoothQuantAttention(Module):
             return (context, past_key_value)
 
         return context
+
+
+
+# class QserveAttention(Module):
+
+#     def __init__(self,
+#                  *,
+#                  local_layer_idx,
+#                  hidden_size,
+#                  num_attention_heads,
+#                  num_kv_heads=None,
+#                  max_position_embeddings=1024,
+#                  num_layers=1,
+#                  apply_query_key_layer_scaling=False,
+#                  attention_head_size=None,
+#                  attention_mask_type=AttentionMaskType.padding,
+#                  bias=True,
+#                  dense_bias=None,
+#                  dtype=None,
+#                  position_embedding_type=PositionEmbeddingType.learned_absolute,
+#                  rotary_embedding_base=10000.0,
+#                  rotary_embedding_scaling=None,
+#                  rotary_embedding_percentage=1.0,
+#                  tp_group=None,
+#                  tp_size=1,
+#                  tp_rank=0,
+#                  scale_alibi_bias=False,
+#                  paged_kv_cache=False,
+#                  quant_mode=QuantMode(0),
+#                  layer_idx_in_cache_pool=None):
+#         super().__init__()
+#         self.local_layer_idx = local_layer_idx
+#         self.attention_mask_type = attention_mask_type
+#         self.attention_head_size = hidden_size // num_attention_heads if attention_head_size is None else attention_head_size
+#         self.num_attention_heads = num_attention_heads // tp_size
+#         self.num_attention_kv_heads = (
+#             num_kv_heads + tp_size - 1
+#         ) // tp_size if num_kv_heads is not None else self.num_attention_heads
+#         self.layer_idx_in_cache_pool = layer_idx_in_cache_pool
+#         self.hidden_size = hidden_size // tp_size
+#         self.max_position_embeddings = 0 if max_position_embeddings is None else max_position_embeddings
+#         self.tp_size = tp_size
+#         self.tp_rank = tp_rank
+#         self.dense_bias = dense_bias
+#         if dense_bias is None:
+#             self.dense_bias = bias
+
+#         self.num_layers = num_layers
+#         self.apply_query_key_layer_scaling = apply_query_key_layer_scaling
+#         self.norm_factor = math.sqrt(self.attention_head_size)
+#         self.q_scaling = 1
+#         if self.apply_query_key_layer_scaling:
+#             self.norm_factor *= self.num_layers
+#             self.q_scaling *= self.num_layers
+#         # Whether to scale ALiBi bias. Mathematically, it's equivalent to
+#         # normalizing QK after adding bias.
+#         #   - False, inv_sqrt_Dh * Q*K^T + alibi_bias
+#         #   - True,  inv_sqrt_Dh * Q*K^T + inv_sqrt_Dh * alibi_bias
+#         self.scale_alibi_bias = scale_alibi_bias
+
+#         self.position_embedding_type = position_embedding_type
+#         self.paged_kv_cache = paged_kv_cache
+
+#         self.rotary_embedding_base = rotary_embedding_base
+#         self.rotary_embedding_scale_type = RotaryScalingType.none
+#         self.rotary_embedding_scale = 1.0
+#         self.rotary_embedding_dim = 0
+
+#         if rotary_embedding_scaling is not None:
+#             rotary_scaling_type = rotary_embedding_scaling.get(
+#                 "type", rotary_embedding_scaling.get("rope_type"))
+#             self.rotary_embedding_scale_type = RotaryScalingType.from_string(
+#                 rotary_scaling_type)
+#             self.rotary_embedding_scale = rotary_embedding_scaling.get(
+#                 "factor", 1.0)
+
+#         if self.position_embedding_type.is_rope():
+#             self.rotary_embedding_dim = int(self.attention_head_size *
+#                                             rotary_embedding_percentage)
+#         elif self.position_embedding_type.is_alibi():
+#             alibi_scale = 1. / self.norm_factor if self.scale_alibi_bias else 1.
+#             alibi_slopes = generate_alibi_slopes(self.num_attention_heads *
+#                                                  self.tp_size,
+#                                                  tp_size=self.tp_size,
+#                                                  tp_rank=self.tp_rank,
+#                                                  alibi_scale=alibi_scale)
+#             self.register_parameter(
+#                 'alibi_slopes',
+#                 Parameter(alibi_slopes, dtype='float32', is_buffer=True))
+
+#         self.quant_mode = quant_mode
+#         self.dtype = dtype
+
+#         if self.quant_mode.has_act_static_scaling():
+#             self.quantization_scaling_factor = Parameter(shape=(1, ),
+#                                                          dtype='float32')
+#         else:
+#             self.register_parameter('quantization_scaling_factor', None)
+
+#         qkv_quant_mode = quant_mode
+#         if self.quant_mode.is_qserve():
+#             # We need to hijack quant_mode for QKV because QKV always uses per channel scaling
+#             qkv_quant_mode = QuantMode.use_qserve_quant(True)
+        
+#         self.qkv = Linear(
+#             hidden_size,
+#             tp_size * self.num_attention_heads * self.attention_head_size +
+#             (2 * tp_size * self.num_attention_kv_heads *
+#              self.attention_head_size),
+#             bias=bias,
+#             dtype=dtype,
+#             tp_group=tp_group,
+#             tp_size=tp_size,
+#             gather_output=False)

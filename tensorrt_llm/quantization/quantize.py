@@ -182,14 +182,59 @@ def smooth_quantize_plugin(model, quant_mode):
     setattr(model, 'quant_mode', quant_mode)
     return model
 
+def qserve_quantize_plugin(model, quant_mode):
+    # quant_map = {
+    #     # RmsNorm: SmoothQuantRmsNorm,
+    #     # LayerNorm: SmoothQuantLayerNorm,
+    #     # GatedMLP: SmoothQuantGatedMLP,
+    #     # MLP: SmoothQuantMLP,
+    #     Attention: Attention,
+    # }
+
+    # for name, layer, parent in model.named_modules_with_parent():
+    #     layer_name = name.rsplit('.', 1)[-1]
+    #     if layer_name in ['ln_f', 'ln_embed']:
+    #         continue
+
+    #     quant_cls = None
+    #     for cls in quant_map:
+    #         if isinstance(layer, cls):
+    #             quant_cls = quant_map[cls]
+    #             break
+
+    #     if quant_cls is None:
+    #         continue
+
+        # init_params = get_init_params(layer, quant_cls)
+    #     init_params["quant_mode"] = quant_mode
+    #     if isinstance(layer, Attention):
+    #         init_params[
+    #             "num_attention_heads"] = layer.num_attention_heads * layer.tp_size
+    #     quant_layer = quant_cls(**init_params)
+    #     if parent is not None:
+    #         setattr(parent, layer_name, quant_layer)
+    #     else:
+    #         model = quant_layer
+
+    # setattr(model, 'quant_mode', quant_mode)
+    return model
+
+
+
 
 def smooth_quantize(model, quant_config: QuantConfig):
     assert quant_config.quant_mode.has_act_and_weight_quant()
+    assert quant_config.quant_mode.is_smoothquant()
     if quant_config.quant_algo in W8A8_SQ_PLUGIN_LIST:
         return smooth_quantize_plugin(model, quant_config.quant_mode)
     else:
         return smooth_quantize_ootb(model, quant_config)
 
+def qserve_quantize(model, quant_config: QuantConfig):
+    assert quant_config.quant_mode.has_act_and_weight_quant()
+    assert quant_config.quant_mode.is_qserve()
+
+    qserve_quantize_plugin(model, quant_config.quant_mode)
 
 def fp8_quantize(model, quant_config: QuantConfig):
     assert quant_config.quant_mode.has_fp8_qdq()
@@ -275,7 +320,10 @@ def quantize(model, quant_config: QuantConfig):
     elif quant_mode.has_fp8_rowwise():
         model = fp8_rowwise_quantize(model, quant_config)
     elif quant_mode.has_act_and_weight_quant():
-        model = smooth_quantize(model, quant_config)
+        if quant_mode.is_smoothquant():
+            model = smooth_quantize(model, quant_config)
+        elif quant_mode.is_qserve():
+            model = qserve_quantize(model, quant_config)
     elif quant_mode.is_weight_only():
         if quant_mode.has_per_group_scaling():
             model = weight_only_groupwise_quantize(model, quant_config)

@@ -319,6 +319,13 @@ def parse_arguments():
     add_plugin_argument(plugin_config_parser)
     return parser
 
+# def preprocess_weights_hook(weights):
+#     for key, weight in weights:
+#         if "qkv" in key:
+#             assert weight.dtype == torch.int8
+#             weight = weight.to(torch.float16)
+#             weights[key] = weight
+#     return weights
 
 def build_model(
     build_config: BuildConfig,

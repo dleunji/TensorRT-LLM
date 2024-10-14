@@ -114,6 +114,12 @@ class QuantMode(IntFlag):
         return self._all(self.INT8_WEIGHTS | self.ACTIVATIONS,
                          self.WEIGHTS_AND_ACTIVATIONS)
 
+    def is_smoothquant(self):
+        return self._any(self.SMOOTHQUANT)
+
+    def is_qserve(self):
+        return self._any(self.QSERVE)
+
     def has_act_or_weight_quant(self):
         return self._any(self.INT4_WEIGHTS | self.INT8_WEIGHTS
                          | self.ACTIVATIONS)
@@ -240,7 +246,7 @@ class QuantMode(IntFlag):
             mode = mode | QuantMode.SMOOTHQUANT
         
         if use_qserve_quant:
-            mode = model | QuantMode.QSERVE
+            mode = mode | QuantMode.QSERVE
 
         return mode
 
@@ -315,9 +321,9 @@ class QuantMode(IntFlag):
     def to_dict(self):
         return {
             'use_smooth_quant':
-            self.has_act_and_weight_quant(),
+            self.is_smoothquant(),
             'use_qserve_quant':
-            self.has_act_and_weight_quant(),
+            self.is_qserve(),
             'per_channel':
             self.has_per_channel_scaling(),
             'per_token':
