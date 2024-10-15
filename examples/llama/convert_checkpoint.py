@@ -277,10 +277,10 @@ def args_to_quant_config(args: argparse.Namespace) -> QuantConfig:
     elif args.qserve:
         if args.per_channel:
             quant_config.quant_algo = QuantAlgo.W4A8_QSERVE_PER_CHANNEL
-            quant_config.group_size = args.group_size
+            quant_config.group_size = -1
         elif args.per_group:
             quant_config.quant_algo = QuantAlgo.W4A8_QSERVE_PER_GROUP
-            quant_config.group_size = -1
+            quant_config.group_size = args.group_size
         else:
             assert False, "You need to choose one of the methods between PER-GROUP or PER-CHANNEL for Qserve"
     elif args.use_fp8_rowwise:
