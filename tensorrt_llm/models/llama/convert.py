@@ -2269,7 +2269,8 @@ def load_from_lmquant(
     output_dir: str,
     group_size: str,
     config: LLaMAConfig,
-    device: str = "cuda"
+    device: str = "cuda",
+    torch_dtype=torch.float16
 ):
     os.makedirs(output_dir, exist_ok=True)
     config.to_json_file(os.path.join(output_dir, 'config.json'))
@@ -2324,6 +2325,14 @@ def load_from_lmquant(
                 elif "mlp.gate_proj" in layer_weight_name:
                     name += "mlp.fc."
                 tllm_name = tllm_prefix + name
+
+                ########
+                if "mlp" in tllm_name:
+                    mlp_weight = module.weight.data
+                    # mlp_weight = mlp_weight.to(dtype=torch_dtype)
+                    weights[tllm_name + "weight"] = mlp_weight
+                    continue
+                ########
                 qweight, s1_scales, s2_scales, s2_zeros = apply_qserve(group_size, module, s1_scale, s2_scale, zeros)
                 print(tllm_name + "weight")
                 weights[tllm_name + "weight"] = qweight
@@ -2383,17 +2392,18 @@ def load_from_lmquant(
             pass
         else:
             if "model" in key:
-                key = key.replace("model", "transformers")
+                key = key.replace("model", "transformer")
             if "embed_tokens" in key:
-                key = "lm_head.weight"
+                key = key.replace("embed_tokens", "vocab_embedding")
             elif "post_attention_layernorm" in key:
                 key = key.replace("post_attention_layernorm", "post_layernorm")
-            if "model.norm.weight" == key:
+            if "transformer.norm.weight" == key:
                 key = "transformer.ln_f.weight"
+            param = param.to(dtype=torch_dtype)
             weights[key] = param
     # weights = {key: value for key, value in sorted(weights.items())}
     for key, weight in weights.items():
-        print(key, weight.shape)
+        print(key, weight.shape, weight.dtype)
 
     safetensors.torch.save_file(
         weights, os.path.join(output_dir, f'rank0.safetensors'))
