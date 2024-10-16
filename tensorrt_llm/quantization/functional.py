@@ -22,7 +22,7 @@ import torch.nn.functional as F
 from .._common import default_net, default_trtnet
 from .._utils import str_dtype_to_np, str_dtype_to_trt
 from ..functional import (Tensor, _add_plugin_info, _create_tensor, cast, clip,
-                          constant, matmul, repeat_interleave, round)
+                          constant, matmul, repeat_interleave, round, expand_dims)
 from ..layers.linear import ColumnLinear
 from ..plugin import TRT_LLM_PLUGIN_NAMESPACE
 from .mode import QuantMode

@@ -1083,7 +1083,8 @@ def build(model: PretrainedModel, build_config: BuildConfig) -> Engine:
     use_auto_parallel = build_config.auto_parallel_config.enabled
     use_weight_only = model.config.quant_mode.is_weight_only()
     per_group = model.config.quant_mode.has_per_group_scaling()
-    use_smooth_quant = model.config.quant_mode.has_act_and_weight_quant()
+    use_qserve_quant = model.config.quant_mode.is_qserve()
+    use_smooth_quant = model.config.quant_mode.is_smoothquant()
     use_fp8_rowwise = model.config.quant_mode.has_fp8_rowwise()
     disable_weight_only_quant_plugin = model.config.disable_weight_only_quant_plugin if hasattr(
         model.config, 'disable_weight_only_quant_plugin') else False

@@ -269,8 +269,8 @@ class PluginConfig(metaclass=PluginConfigMeta):
 
     def set_qserve_quant_plugins(self, dtype: str = "auto"):
         self.smooth_quant_gemm_plugin = dtype
-        self.rmsnorm_quantization_plugin = dtype
-        self.layernorm_quantization_plugin = dtype
+        # self.rmsnorm_quantization_plugin = dtype
+        # self.layernorm_quantization_plugin = dtype
         return self
 
     def set_fp8_rowwise_quant_plugins(self, dtype: str = "auto"):

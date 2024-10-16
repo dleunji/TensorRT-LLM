@@ -1971,115 +1971,469 @@ class SmoothQuantAttention(Module):
         return context
 
 
+def qserve_dequant(weights: Tensor, s1_scales: Tensor,
+                      s2_scales: Tensor, s2_zeros: Tensor) -> Tensor:
+    # if not default_net().plugin_config.qserve_quant_gemm_plugin:
+    #     raise TypeError("Quantized GEMM inQserve is only supported with plugin")
+    # else:
+    #     print("@eunji", "weights dtype", weights.dtype)
+    #     # decompression
+    #     # weights.dtype = "float16"
+    #     group_size = 128
+    #     casted_weights = cast(weights, "float16")
+    #     s1_scales = cast(s1_scales, "float16")
+    #     s2_scales = cast(s2_scales, "float16")
+    #     s2_zeros = cast(s2_zeros, "float16")
 
-# class QserveAttention(Module):
+    #     print("@eunji", "weights dtype", casted_weights.dtype)
+    #     casted_weights = casted_weights.view([casted_weights.shape[0], casted_weights.shape[1] // group_size, group_size])
+    #     print("@eunji", "weights shape", casted_weights.shape)
+    #     s1_scales = expand_dims(s1_scales, [1])
+    #     s2_scales = expand_dims(s2_scales, [2])
+    #     s2_zeros = expand_dims(s2_zeros, [2])
 
-#     def __init__(self,
-#                  *,
-#                  local_layer_idx,
-#                  hidden_size,
-#                  num_attention_heads,
-#                  num_kv_heads=None,
-#                  max_position_embeddings=1024,
-#                  num_layers=1,
-#                  apply_query_key_layer_scaling=False,
-#                  attention_head_size=None,
-#                  attention_mask_type=AttentionMaskType.padding,
-#                  bias=True,
-#                  dense_bias=None,
-#                  dtype=None,
-#                  position_embedding_type=PositionEmbeddingType.learned_absolute,
-#                  rotary_embedding_base=10000.0,
-#                  rotary_embedding_scaling=None,
-#                  rotary_embedding_percentage=1.0,
-#                  tp_group=None,
-#                  tp_size=1,
-#                  tp_rank=0,
-#                  scale_alibi_bias=False,
-#                  paged_kv_cache=False,
-#                  quant_mode=QuantMode(0),
-#                  layer_idx_in_cache_pool=None):
-#         super().__init__()
-#         self.local_layer_idx = local_layer_idx
-#         self.attention_mask_type = attention_mask_type
-#         self.attention_head_size = hidden_size // num_attention_heads if attention_head_size is None else attention_head_size
-#         self.num_attention_heads = num_attention_heads // tp_size
-#         self.num_attention_kv_heads = (
-#             num_kv_heads + tp_size - 1
-#         ) // tp_size if num_kv_heads is not None else self.num_attention_heads
-#         self.layer_idx_in_cache_pool = layer_idx_in_cache_pool
-#         self.hidden_size = hidden_size // tp_size
-#         self.max_position_embeddings = 0 if max_position_embeddings is None else max_position_embeddings
-#         self.tp_size = tp_size
-#         self.tp_rank = tp_rank
-#         self.dense_bias = dense_bias
-#         if dense_bias is None:
-#             self.dense_bias = bias
+    #     # dequantized_weight = weights.sub(s2_zeros).mul(s2_scales)
+    #     # dequantized_weight = dequantized_weight.mul(s1_scales)
+    #     print(casted_weights.shape)
+    #     print(s2_zeros.shape)
+    #     casted_weights = (casted_weights - s2_zeros) * s2_scales
+    #     casted_weights = casted_weights.flatten(1, 2)
+    #     print("@eunji", "before multiplication")
+    #     print(casted_weights.shape)
+    #     print(s1_scales.shape)
+    #     casted_weights = casted_weights * s1_scales
+    # print("@eunji", "elementwise mul and broadcasting is succeeded!")
+    # print("@eunji", "original shape", weights.shape)
+    # print("@eunji", "weights", casted_weights.shape)
+    # constant(np.a)
+    casted_weights = cast(weights, "float16")
+    return casted_weights
 
-#         self.num_layers = num_layers
-#         self.apply_query_key_layer_scaling = apply_query_key_layer_scaling
-#         self.norm_factor = math.sqrt(self.attention_head_size)
-#         self.q_scaling = 1
-#         if self.apply_query_key_layer_scaling:
-#             self.norm_factor *= self.num_layers
-#             self.q_scaling *= self.num_layers
-#         # Whether to scale ALiBi bias. Mathematically, it's equivalent to
-#         # normalizing QK after adding bias.
-#         #   - False, inv_sqrt_Dh * Q*K^T + alibi_bias
-#         #   - True,  inv_sqrt_Dh * Q*K^T + inv_sqrt_Dh * alibi_bias
-#         self.scale_alibi_bias = scale_alibi_bias
 
-#         self.position_embedding_type = position_embedding_type
-#         self.paged_kv_cache = paged_kv_cache
+class QserveLinear(Linear):
 
-#         self.rotary_embedding_base = rotary_embedding_base
-#         self.rotary_embedding_scale_type = RotaryScalingType.none
-#         self.rotary_embedding_scale = 1.0
-#         self.rotary_embedding_dim = 0
+    def __init__(self,
+                 in_features,
+                 out_features,
+                 bias=True,
+                 dtype=None,
+                 tp_group=None,
+                 tp_size=1,
+                 gather_output=True,
+                 quant_mode=QuantMode(0)):
+        super().__init__(in_features,
+                         out_features,
+                         bias=bias,
+                         dtype=dtype,
+                         tp_group=tp_group,
+                         tp_size=tp_size,
+                         gather_output=gather_output)
 
-#         if rotary_embedding_scaling is not None:
-#             rotary_scaling_type = rotary_embedding_scaling.get(
-#                 "type", rotary_embedding_scaling.get("rope_type"))
-#             self.rotary_embedding_scale_type = RotaryScalingType.from_string(
-#                 rotary_scaling_type)
-#             self.rotary_embedding_scale = rotary_embedding_scaling.get(
-#                 "factor", 1.0)
+        if not quant_mode.has_act_and_weight_quant():
+            raise ValueError(
+                "Qserve Linear has to have act+weight quantization mode set"
+            )
 
-#         if self.position_embedding_type.is_rope():
-#             self.rotary_embedding_dim = int(self.attention_head_size *
-#                                             rotary_embedding_percentage)
-#         elif self.position_embedding_type.is_alibi():
-#             alibi_scale = 1. / self.norm_factor if self.scale_alibi_bias else 1.
-#             alibi_slopes = generate_alibi_slopes(self.num_attention_heads *
-#                                                  self.tp_size,
-#                                                  tp_size=self.tp_size,
-#                                                  tp_rank=self.tp_rank,
-#                                                  alibi_scale=alibi_scale)
-#             self.register_parameter(
-#                 'alibi_slopes',
-#                 Parameter(alibi_slopes, dtype='float32', is_buffer=True))
+        weights_dtype = dtype
+        # The type is int8, but the values are int4(0 <= values < 16)
+        if quant_mode.has_act_and_weight_quant():
+            weights_dtype = "int8"
+        self.group_size = 128
+        self.weight = Parameter(shape=(self.out_features, self.in_features),
+                                dtype=weights_dtype)
 
-#         self.quant_mode = quant_mode
-#         self.dtype = dtype
+        # if quant_mode.has_act_and_weight_quant():
+        #     scale_shape = (1, self.out_features
+        #                    ) if quant_mode.has_per_channel_scaling() else (1, 1)
+        #     self.per_channel_scale = Parameter(shape=scale_shape,
+        #                                        dtype="float32")
 
-#         if self.quant_mode.has_act_static_scaling():
-#             self.quantization_scaling_factor = Parameter(shape=(1, ),
-#                                                          dtype='float32')
-#         else:
-#             self.register_parameter('quantization_scaling_factor', None)
+        # if quant_mode.has_act_static_scaling():
+        #     self.act_scale = Parameter(shape=(1, 1), dtype="float32")
+        self.s1_scales = Parameter(shape=(self.out_features,), dtype="float32")
+        if quant_mode.has_per_group_scaling():
+            self.s2_scales = Parameter(shape=(self.out_features, self.in_features // self.group_size), dtype="float32")
+            self.s2_zeros = Parameter(shape=(self.out_features, self.in_features // self.group_size), dtype="int32")
+        else:
+            assert False, "per-channel quantization is not implemented yet"
+        self.quant_mode = quant_mode
 
-#         qkv_quant_mode = quant_mode
-#         if self.quant_mode.is_qserve():
-#             # We need to hijack quant_mode for QKV because QKV always uses per channel scaling
-#             qkv_quant_mode = QuantMode.use_qserve_quant(True)
-        
-#         self.qkv = Linear(
-#             hidden_size,
-#             tp_size * self.num_attention_heads * self.attention_head_size +
-#             (2 * tp_size * self.num_attention_kv_heads *
-#              self.attention_head_size),
-#             bias=bias,
-#             dtype=dtype,
-#             tp_group=tp_group,
-#             tp_size=tp_size,
-#             gather_output=False)
+    def forward(self, x, lora_runtime_params=None, reduce_fusion_params=None):
+        assert lora_runtime_params is None, "lora is not supported on SmoothQuantLinear now"
+        # if self.quant_mode.has_act_static_scaling():
+        #     per_token_scale = self.act_scale.value
+        # else:
+        #     # If we are in SmoothQuant with dynamic activation scaling,
+        #     # input x has to be a tuple of int8 tensor and fp32 scaling factors
+        #     x, per_token_scale = x
+
+        # x = smooth_quant_gemm(x, self.weight.value, per_token_scale,
+        #                       self.per_channel_scale.value,
+        #                       self.quant_mode.has_per_token_dynamic_scaling(),
+        #                       self.quant_mode.has_per_channel_scaling(),
+        #                       self.dtype)
+        w_deq_out = qserve_dequant(self.weight.value, self.s1_scales.value, self.s2_scales.value, self.s2_zeros.value)
+
+        # if self.bias is not None:
+        #     x = x + self.bias.value
+
+        # if self.gather_output and self.tp_size > 1 and self.tp_group is not None:
+        #     # [dim0, local_dim] -> [dim0 * tp_size, local_dim] --> [dim0, local_dim * tp_size]
+        #     x = allgather(x, self.tp_group, gather_dim=1)
+
+        return self.multiply_collect(
+            x,
+            w_deq_out,
+            gemm_plugin=None,
+            reduce_fusion_params=reduce_fusion_params,
+            lora_runtime_params=lora_runtime_params,
+        )
+
+class QserveAttention(Module):
+
+    def __init__(
+            self,
+            *,
+            local_layer_idx,
+            hidden_size,
+            num_attention_heads,
+            num_kv_heads=None,
+            max_position_embeddings=1024,
+            num_layers=1,
+            apply_query_key_layer_scaling=False,
+            attention_head_size=None,
+            attention_mask_type=AttentionMaskType.padding,
+            bias=True,
+            dense_bias=None,
+            dtype=None,
+            position_embedding_type=PositionEmbeddingType.learned_absolute,
+            rotary_embedding_base=10000.0,
+            rotary_embedding_scaling=None,
+            rotary_embedding_percentage=1.0,
+            tp_group=None,
+            tp_size=1,
+            tp_rank=0,
+            scale_alibi_bias=False,
+            paged_kv_cache=False,
+            quant_mode=QuantMode(0),
+    ):
+        super().__init__()
+        self.local_layer_idx = local_layer_idx
+        self.attention_mask_type = attention_mask_type
+        self.attention_head_size = hidden_size // num_attention_heads if attention_head_size is None else attention_head_size
+        self.num_attention_heads = num_attention_heads // tp_size
+        self.num_attention_kv_heads = (
+            num_kv_heads + tp_size - 1
+        ) // tp_size if num_kv_heads is not None else self.num_attention_heads
+        self.hidden_size = hidden_size // tp_size
+        self.max_position_embeddings = 0 if max_position_embeddings is None else max_position_embeddings
+        self.tp_size = tp_size
+        self.tp_rank = tp_rank
+        self.dense_bias = dense_bias
+        if dense_bias is None:
+            self.dense_bias = bias
+
+        self.num_layers = num_layers
+        self.apply_query_key_layer_scaling = apply_query_key_layer_scaling
+        self.norm_factor = math.sqrt(self.attention_head_size)
+        self.q_scaling = 1
+        if self.apply_query_key_layer_scaling:
+            self.norm_factor *= self.num_layers
+            self.q_scaling *= self.num_layers
+        # Whether to scale ALiBi bias. Mathematically, it's equivalent to
+        # normalizing QK after adding bias.
+        #   - False, inv_sqrt_Dh * Q*K^T + alibi_bias
+        #   - True,  inv_sqrt_Dh * Q*K^T + inv_sqrt_Dh * alibi_bias
+        self.scale_alibi_bias = scale_alibi_bias
+
+        self.position_embedding_type = position_embedding_type
+        self.paged_kv_cache = paged_kv_cache
+
+        self.rotary_embedding_base = rotary_embedding_base
+        self.rotary_embedding_scale_type = RotaryScalingType.none
+        self.rotary_embedding_scale = 1.0
+        self.rotary_embedding_dim = 0
+
+        if rotary_embedding_scaling is not None:
+            rotary_scaling_type = rotary_embedding_scaling.get(
+                "type", rotary_embedding_scaling.get("rope_type"))
+            self.rotary_embedding_scale_type = RotaryScalingType.from_string(
+                rotary_scaling_type)
+            self.rotary_embedding_scale = rotary_embedding_scaling.get(
+                "factor", 1.0)
+
+        if self.position_embedding_type.is_rope():
+            self.rotary_embedding_dim = int(self.attention_head_size *
+                                            rotary_embedding_percentage)
+        elif self.position_embedding_type.is_alibi():
+            alibi_scale = 1. / self.norm_factor if self.scale_alibi_bias else 1.
+            alibi_slopes = generate_alibi_slopes(self.num_attention_heads *
+                                                 self.tp_size,
+                                                 tp_size=self.tp_size,
+                                                 tp_rank=self.tp_rank,
+                                                 alibi_scale=alibi_scale)
+            self.register_parameter(
+                'alibi_slopes',
+                Parameter(alibi_slopes, dtype='float32', is_buffer=True))
+
+        self.quant_mode = quant_mode
+        self.dtype = dtype
+
+        assert self.quant_mode.is_qserve()
+        # if self.quant_mode.has_act_static_scaling():
+        #     self.quantization_scaling_factor = Parameter(shape=(1, ),
+        #                                                  dtype='float32')
+        # else:
+        #     self.register_parameter('quantization_scaling_factor', None)
+
+        # qkv_quant_mode = quant_mode
+        # if self.quant_mode.has_act_and_weight_quant():
+        #     # We need to hijack quant_mode for QKV because QKV always uses per channel scaling
+        #     qkv_quant_mode = QuantMode.from_description(
+        #         True, True, quant_mode.has_per_token_dynamic_scaling(), True)
+
+        self.register_parameter('kv_cache_scaling_factor', None)
+        ##############
+
+        self.qkv = QserveLinear(
+            hidden_size,
+            tp_size * self.num_attention_heads * self.attention_head_size +
+            (2 * tp_size * self.num_attention_kv_heads *
+             self.attention_head_size),
+            bias=bias,
+            dtype=dtype,
+            tp_group=tp_group,
+            tp_size=tp_size,
+            gather_output=False,
+            quant_mode=quant_mode)
+
+        self.dense = QserveLinear(tp_size * self.num_attention_heads *
+                                          self.attention_head_size,
+                                          hidden_size,
+                                          bias=self.dense_bias,
+                                          dtype=dtype,
+                                          tp_group=tp_group,
+                                          tp_size=tp_size,
+                                          quant_mode=quant_mode)
+        #################
+        self.use_lora = False
+
+    def forward(
+        self,
+        hidden_states: Tensor,
+        attention_mask=None,
+        use_cache=False,
+        kv_cache_params=None,
+        attention_params=None,
+        spec_decoding_params=None,
+        encoder_output=None,
+        position_embedding=None,
+        norm_before_bmm1=False,
+        lora_layer_params=None,
+        reduce_fusion_params: Optional[AllReduceFusionParams] = None,
+    ):
+        assert lora_layer_params is None, "lora is not supported on SmoothQuantAttention now"
+        if default_net().plugin_config.qserve_quant_gemm_plugin:
+            qkv = self.qkv(hidden_states)
+        else:
+            raise ValueError("qserve_quant_gemm_plugin is not set")
+
+        alibi_slopes = None
+        if self.position_embedding_type == PositionEmbeddingType.alibi:
+            alibi_slopes = self.alibi_slopes.value
+            dtype = trt.float32
+            if default_net().plugin_config.gpt_attention_plugin or default_net(
+            ).plugin_config.inflight_batching_gpt_attention_plugin:
+                dtype = hidden_states.dtype if self.quant_mode.has_act_static_scaling(
+                ) else hidden_states[0].dtype
+                if dtype == trt.int8:
+                    dtype = trt.float16
+            alibi_slopes = cast(alibi_slopes, dtype)
+
+        if spec_decoding_params is None:
+            spec_decoding_params = SpecDecodingParams()
+
+        if default_net().plugin_config.gpt_attention_plugin:
+
+            assert attention_params.is_valid(
+                default_net().plugin_config.gpt_attention_plugin,
+                default_net().plugin_config.remove_input_padding, use_cache)
+            if use_cache:
+                assert kv_cache_params.is_valid(
+                    default_net().plugin_config.gpt_attention_plugin)
+            assert self.attention_mask_type == AttentionMaskType.causal, \
+                'Plugin only support masked MHA.'
+            if self.kv_cache_scaling_factor is not None:
+                kv_orig_quant_scale = constant(fp32_array(
+                    [1.0])) / self.kv_cache_scaling_factor.value
+                kv_quant_orig_scale = self.kv_cache_scaling_factor.value
+            else:
+                kv_orig_quant_scale = None
+                kv_quant_orig_scale = None
+            if self.position_embedding_type.is_rope():
+                rotary_inv_freq = attention_params.rotary_inv_freq
+                rotary_cos_sin = attention_params.embed_positions_for_gpt_attention
+            else:
+                rotary_inv_freq = None
+                rotary_cos_sin = None
+            context, past_key_value = gpt_attention(
+                qkv=qkv,
+                past_key_value=kv_cache_params.get_first_past_key_value(),
+                sequence_length=attention_params.sequence_length,
+                host_past_key_value_lengths=kv_cache_params.
+                host_past_key_value_lengths,
+                host_max_attention_window_sizes=kv_cache_params.
+                host_max_attention_window_sizes,
+                host_sink_token_length=kv_cache_params.host_sink_token_length,
+                context_lengths=attention_params.context_lengths,
+                cache_indirection=kv_cache_params.cache_indirection,
+                host_request_types=attention_params.host_request_types,
+                layer_idx=self.local_layer_idx,
+                num_heads=self.num_attention_heads,
+                num_kv_heads=self.num_attention_kv_heads,
+                hidden_size_per_head=self.attention_head_size,
+                q_scaling=self.q_scaling,
+                rotary_embedding_dim=self.rotary_embedding_dim,
+                rotary_embedding_base=self.rotary_embedding_base,
+                rotary_embedding_scale_type=self.rotary_embedding_scale_type,
+                rotary_embedding_scale=self.rotary_embedding_scale,
+                rotary_embedding_max_positions=self.max_position_embeddings,
+                position_embedding_type=self.position_embedding_type,
+                rotary_inv_freq=rotary_inv_freq,
+                rotary_cos_sin=rotary_cos_sin,
+                kv_orig_quant_scale=kv_orig_quant_scale,
+                kv_quant_orig_scale=kv_quant_orig_scale,
+                kv_cache_quant_mode=self.quant_mode,
+                max_context_length=attention_params.max_context_length,
+                alibi_slopes=alibi_slopes,
+                tp_size=self.tp_size,
+                tp_rank=self.tp_rank,
+                kv_cache_block_offsets=kv_cache_params.kv_cache_block_offsets,
+                host_kv_cache_block_offsets=kv_cache_params.
+                host_kv_cache_block_offsets,
+                host_kv_cache_pool_pointers=kv_cache_params.
+                host_kv_cache_pool_pointers,
+                host_context_lengths=attention_params.host_context_lengths,
+                use_cache=use_cache,
+                spec_decoding_generation_lengths=spec_decoding_params.
+                spec_decoding_generation_lengths,
+                spec_decoding_position_offsets=spec_decoding_params.
+                spec_decoding_position_offsets,
+                spec_decoding_packed_mask=spec_decoding_params.
+                spec_decoding_packed_mask,
+                host_runtime_perf_knobs=attention_params.host_runtime_perf_knobs
+            )
+        else:
+            assert self.paged_kv_cache == False
+
+            def transpose_for_scores(x):
+                new_x_shape = concat([
+                    shape(x, 0),
+                    shape(x, 1), self.num_attention_heads,
+                    self.attention_head_size
+                ])
+                return x.view(new_x_shape).permute([0, 2, 1, 3])
+
+            query, key, value = split(qkv, self.hidden_size, dim=2)
+            query = transpose_for_scores(query)
+            key = transpose_for_scores(key)
+            value = transpose_for_scores(value)
+
+            past_key_value = kv_cache_params.get_first_past_key_value()
+            if past_key_value is not None:
+
+                def dequantize_tensor(x, scale):
+                    # Cast from int8 to dtype
+                    casted_x = cast(x, self.dtype)
+                    return casted_x * scale
+
+                if self.quant_mode.has_int8_kv_cache():
+                    past_key_value = dequantize_tensor(
+                        past_key_value, self.kv_dequantization_scale.value)
+
+                # past_key_value [bs, 2, num_heads, max_seq_len, head_dim]
+                past_key, past_value = split(past_key_value, 1, dim=1)
+
+                key_shape = concat([
+                    shape(past_key, 0),
+                    shape(past_key, 2),
+                    shape(past_key, 3),
+                    shape(past_key, 4)
+                ])
+                past_key = past_key.view(key_shape, zero_is_placeholder=False)
+                past_value = past_value.view(key_shape,
+                                             zero_is_placeholder=False)
+                key = concat([past_key, key], dim=2)
+                value = concat([past_value, value], dim=2)
+
+            def merge_caches():
+                key_inflated_shape = concat([
+                    shape(key, 0), 1,
+                    shape(key, 1),
+                    shape(key, 2),
+                    shape(key, 3)
+                ])
+                inflated_key = key.view(key_inflated_shape,
+                                        zero_is_placeholder=False)
+                inflated_value = value.view(key_inflated_shape,
+                                            zero_is_placeholder=False)
+                past_key_value = concat([inflated_key, inflated_value], dim=1)
+                return past_key_value
+
+            if self.attention_mask_type == AttentionMaskType.causal:
+                query_length = shape(query, 2)
+                key_length = shape(key, 2)
+                starts = concat([0, 0, key_length - query_length, 0])
+                sizes = concat([1, 1, query_length, key_length])
+                buffer = constant(
+                    np.expand_dims(
+                        np.tril(
+                            np.ones(
+                                (self.max_position_embeddings,
+                                 self.max_position_embeddings))).astype(bool),
+                        (0, 1)))
+                causal_mask = slice(buffer, starts, sizes)
+
+            key = key.permute([0, 1, 3, 2])
+            with precision("float32"):
+                attention_scores = matmul(query, key)
+
+                if self.attention_mask_type == AttentionMaskType.causal:
+                    attention_scores = where(causal_mask, attention_scores,
+                                             -10000.0)
+
+                attention_scores = attention_scores / self.norm_factor
+                attention_probs = softmax(attention_scores, dim=-1)
+
+            context = matmul(attention_probs, value,
+                             use_fp32_acc=False).permute([0, 2, 1, 3])
+            context = context.view(
+                concat([shape(context, 0),
+                        shape(context, 1), self.hidden_size]))
+
+            past_key_value = merge_caches()
+
+            if use_cache and self.quant_mode.has_int8_kv_cache():
+                past_key_value = quantize_tensor(
+                    past_key_value, self.kv_quantization_scale.value)
+        # value = cast(self.dense.smoother.value, context.dtype)
+        # context = context / value
+        # if self.quant_mode.has_act_and_weight_quant():
+        #     if self.quant_mode.has_act_static_scaling():
+        #         # Avoid quantization layers as it breaks int8 plugins
+        #         context = quantize_tensor(
+        #             context, self.quantization_scaling_factor.value)
+        #     else:
+        #         # Quantize per token outputs tuple:
+        #         # quantized tensor and scaling factors per token
+        #         context = quantize_per_token(context)
+
+        context = self.dense(
+            context,
+            reduce_fusion_params=reduce_fusion_params,
+        )
+
+        if use_cache:
+            return (context, past_key_value)
+
+        return context

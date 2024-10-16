@@ -183,43 +183,42 @@ def smooth_quantize_plugin(model, quant_mode):
     return model
 
 def qserve_quantize_plugin(model, quant_mode):
-    # quant_map = {
-    #     # RmsNorm: SmoothQuantRmsNorm,
-    #     # LayerNorm: SmoothQuantLayerNorm,
-    #     # GatedMLP: SmoothQuantGatedMLP,
-    #     # MLP: SmoothQuantMLP,
-    #     Attention: Attention,
-    # }
+    quant_map = {
+        # RmsNorm: SmoothQuantRmsNorm,
+        # LayerNorm: SmoothQuantLayerNorm,
+        # GatedMLP: SmoothQuantGatedMLP,
+        # MLP: SmoothQuantMLP,
+        Attention: QserveAttention,
+    }
 
-    # for name, layer, parent in model.named_modules_with_parent():
-    #     layer_name = name.rsplit('.', 1)[-1]
-    #     if layer_name in ['ln_f', 'ln_embed']:
-    #         continue
+    for name, layer, parent in model.named_modules_with_parent():
+        layer_name = name.rsplit('.', 1)[-1]
+        if layer_name in ['ln_f', 'ln_embed']:
+            continue
 
-    #     quant_cls = None
-    #     for cls in quant_map:
-    #         if isinstance(layer, cls):
-    #             quant_cls = quant_map[cls]
-    #             break
+        quant_cls = None
+        for cls in quant_map:
+            if isinstance(layer, cls):
+                quant_cls = quant_map[cls]
+                break
 
-    #     if quant_cls is None:
-    #         continue
+        if quant_cls is None:
+            continue
 
-        # init_params = get_init_params(layer, quant_cls)
-    #     init_params["quant_mode"] = quant_mode
-    #     if isinstance(layer, Attention):
-    #         init_params[
-    #             "num_attention_heads"] = layer.num_attention_heads * layer.tp_size
-    #     quant_layer = quant_cls(**init_params)
-    #     if parent is not None:
-    #         setattr(parent, layer_name, quant_layer)
-    #     else:
-    #         model = quant_layer
+        init_params = get_init_params(layer, quant_cls)
+        init_params["quant_mode"] = quant_mode
+        print(init_params)
+        if isinstance(layer, Attention):
+            init_params[
+                "num_attention_heads"] = layer.num_attention_heads * layer.tp_size
+        quant_layer = quant_cls(**init_params)
+        if parent is not None:
+            setattr(parent, layer_name, quant_layer)
+        else:
+            model = quant_layer
 
-    # setattr(model, 'quant_mode', quant_mode)
+    setattr(model, 'quant_mode', quant_mode)
     return model
-
-
 
 
 def smooth_quantize(model, quant_config: QuantConfig):
